@@ -1,0 +1,208 @@
+# ============================================================
+# OS / FILE SYSTEM
+# ============================================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+.DocumentRevisions-V100
+.fseventsd
+.TemporaryItems
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+*.stackdump
+
+# Linux / desktop environments
+.directory
+.Trash-*
+.nfs*
+
+# ============================================================
+# EDITORS / TEXT EDITORS
+# ============================================================
+
+# Vim
+*.swp
+*.swo
+*.swn
+*.swm
+*.un~
+[._]*.s[a-z]
+[._]*.sw[a-p]
+
+# Emacs
+*~
+\#*\#
+/.#*
+.#*
+*.elc
+
+# Nano
+.nanorc.local
+
+# Sublime Text
+*.sublime-workspace
+*.sublime-project
+
+# VS Code
+.vscode/
+
+# VS Code extensions / local state
+.history/
+
+# JetBrains
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# Eclipse
+.project
+.classpath
+.settings/
+
+# NetBeans
+.nb-gradle/
+.nbattrs
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Xcode
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+
+# ============================================================
+# GENERIC TEMPORARY FILES
+# ============================================================
+
+*.tmp
+*.temp
+*.temporary
+*.bak
+*.backup
+*.old
+*.orig
+*.rej
+*.swp
+*.swo
+*.cache
+*.lock
+
+# ============================================================
+# LOGS
+# ============================================================
+
+*.log
+*.log.*
+logs/
+log/
+
+# ============================================================
+# CRASH DUMPS
+# ============================================================
+
+*.dmp
+*.dump
+*.core
+core.*
+
+# ============================================================
+# LOCAL CONFIGURATION
+# ============================================================
+
+.env
+.env.*
+!.env.example
+*.local
+*.local.*
+.local/
+
+# ============================================================
+# CREDENTIALS / KEYS
+# ============================================================
+
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*.der
+
+# ============================================================
+# ARCHIVES / TEMP EXPORTS
+# ============================================================
+
+*.orig
+*.rej
+
+# ============================================================
+# BACKUP FILES
+# ============================================================
+
+*.bak
+*.backup
+*.old
+*~
+.~lock.*
+.#*
+
+# ============================================================
+# GENERATED DOCUMENT / OFFICE TEMP FILES
+# ============================================================
+
+~$*
+*.asd
+*.wbk
+*.tmp
+
+# ============================================================
+# DATABASE / LOCAL TOOL FILES
+# ============================================================
+
+*.sqlite-shm
+*.sqlite-wal
+
+# ============================================================
+# CLOUD / SYNC METADATA
+# ============================================================
+
+.dropbox/
+.dropbox.attr
+.syncthing.*
+
+
+# ============================================================
+# Personal project-management files
+# ============================================================
+
+initialization.md
+
+# ============================================================
+# Other
+# ============================================================
+
+
+!.github/
+!.github/workflows/*
+!.gitignore
