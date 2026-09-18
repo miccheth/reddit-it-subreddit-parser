@@ -1,1 +1,1 @@
-# repo-template
+# reddit-it-subreddit-parser
