@@ -88,7 +88,7 @@ The human should approve decisions and coherent changes, then review the resulti
 
 # 2. Repository Structure
 
-The repository follows a separation between production code, tests, documentation, plans, and repository automation.
+The repository follows a separation between production code, tests, documentation, and repository automation.
 
 ```text
 project/
@@ -97,9 +97,6 @@ project/
 ├── .gitignore
 ├── docs/
 │   ├── ARCHITECTURE.md
-│   ├── DEVELOPMENT.md
-│   └── DECISIONS.md
-├── plans/
 ├── src/
 ├── tests/
 └── .github/
@@ -157,22 +154,9 @@ If an existing test is incorrect or obsolete, explain why before making a non-tr
 Use:
 
 * `docs/ARCHITECTURE.md` for architecture and technology stack;
-* `docs/DEVELOPMENT.md` for development, testing, build, and tooling procedures;
-* `docs/DECISIONS.md` for important architectural decisions and their rationale.
 
 Do not use `docs/` for temporary implementation plans.
 
-## `plans/`
-
-`plans/` contains plans for non-trivial work.
-
-Plans describe intended work before implementation and may be updated when the approved approach materially changes.
-
-Plans are not the source of truth for implementation.
-
-The code is the source of truth for implementation.
-
-Tests and verification results are the source of truth for verified behavior.
 
 ## `README.md`
 
@@ -315,68 +299,6 @@ Examples:
 * changes with multiple reasonable implementation strategies.
 
 Non-trivial tasks require analysis and planning before implementation.
-
----
-
-# 7. Plans
-
-For non-trivial work, create a plan under:
-
-`plans/`
-
-Use a descriptive filename, for example:
-
-`plans/003-caching-system.md`
-
-A plan should normally contain:
-
-```text
-# Title
-
-## Objective
-
-## Context
-
-## Problem
-
-## Constraints
-
-## Proposed Approach
-
-## Alternatives
-
-## Trade-offs
-
-## Implementation Steps
-
-## Files / Components Affected
-
-## Testing and Verification
-
-## Acceptance Criteria
-
-## Status
-```
-
-Use the following statuses:
-
-* `Proposed`
-* `Approved`
-* `In Progress`
-* `Verification`
-* `Completed`
-
-## Plan rules
-
-* Do not create plans for trivial changes.
-* Do not start implementing non-trivial work before human approval.
-* Keep plans concise and useful.
-* Update the plan when the approved approach materially changes.
-* Do not treat the plan as proof that something was implemented.
-* The code is the source of truth for implementation.
-* Tests and verification results are the source of truth for verified behavior.
-
-When a plan is completed, record relevant implementation and verification results.
 
 ---
 
@@ -609,16 +531,6 @@ for:
 * important dependencies;
 * major system flows.
 
-Use:
-
-`docs/DECISIONS.md`
-
-for important architectural decisions and their rationale.
-
-If an implementation decision becomes a permanent architectural decision, update the appropriate documentation.
-
-Do not duplicate the same information unnecessarily across plans and documentation.
-
 ---
 
 # 18. Documentation
@@ -627,9 +539,6 @@ Use:
 
 * `README.md` for project overview and basic usage;
 * `docs/ARCHITECTURE.md` for architecture and technology stack;
-* `docs/DEVELOPMENT.md` for development, build, testing, and tooling;
-* `docs/DECISIONS.md` for important architectural decisions;
-* `plans/` for non-trivial work.
 
 Keep documentation proportional to the project.
 
