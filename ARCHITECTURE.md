@@ -2,24 +2,24 @@
 
 ## Obiettivo
 
-Pipeline ETL per l'ingestione e l'esportazione dei dump storici Reddit relativi ad una lista di subreddit italiani.
+Pipeline per il filtraggio dei dump storici Reddit, mantenendo soltanto i record appartenenti a una whitelist di subreddit italiani.
 
-I dump `comments` e `submissions` vengono scaricati tramite qBittorrent, rilevati dalla pipeline tramite qBittorrent API quando risultano completati, processati in streaming e filtrati secondo una whitelist configurabile di subreddit italiani.
+I dump `comments` e `submissions` vengono scaricati tramite qBittorrent, rilevati dalla pipeline tramite qBittorrent API quando risultano completati, processati in streaming e filtrati secondo una whitelist configurabile di subreddit italiani. Il risultato è un nuovo file `.zst` (con lo stesso nome del sorgente) contenente solo i record in whitelist, che viene caricato su Scaleway Object Storage.
 
-I record filtrati vengono persistiti in DuckDB. Al termine dell'ingestione, quando tutti i file attesi sono stati processati e viene ricevuto il trigger di fine nella coda dei dump da Qbittorrent-api, il database viene esportato in un unico dataset logico unifico composto da `submissions` e `comments`, suddiviso in chunk `.zst` da circa 10–15 GB e caricato su Scaleway Object Storage.
+La pipeline non utilizza un database intermedio: ogni dump viene letto, filtrato e riscritto come file `.zst` filtrato in `data/export/`, poi caricato in upload multi-part.
 
 Obiettivi principali:
 
 * processare i dump `.zst` senza decomprimerli integralmente su disco;
 * elaborare i record in streaming;
 * evitare file JSON intermedi;
-* filtrare i record prima della persistenza;
-* garantire processing resumable e idempotente;
-* mantenere lo stato di ogni file processato;
-* eliminare i dump sorgente dopo il processamento riuscito;
+* filtrare i record tramite whitelist di subreddit;
+* scrivere un file `.zst` filtrato con lo stesso nome del sorgente;
+* evitare file vuoti in export quando un dump non contiene subreddit della whitelist;
+* eliminare sempre il dump sorgente dopo il processamento;
 * rilevare lo stato dei download tramite qBittorrent API;
-* esportare il dataset finale in chunk indipendenti;
-* permettere la ripresa di processing ed export interrotti.
+* caricare i file filtrati su Scaleway Object Storage in upload multi-part;
+* attendere il completamento degli upload prima di terminare.
 
 ---
 
@@ -30,31 +30,23 @@ qBittorrent
      │
      │ download
      ▼
-data/torrent/
+torrent (file .zst completati)
      │
      │ qBittorrent API
      │ file completed
      ▼
-Processor
+Processor (loop di ingestione)
      │
-     │ Zstd streaming
+     │ Zstd streaming decompression
      │ NDJSON parsing
      │ whitelist filtering
      ▼
-DuckDB
+data/export/<nome>.zst  (filtrato, stesso nome)
      │
-     │ tutti i file attesi processati
-     │ + trigger di finish da processare in coda
+     │ coda upload (queue.Queue)
      ▼
-Export
+Upload worker (N concorrenti, multi-part)
      │
-     │ submissions + comments
-     │ stream serialization
-     │ Zstd chunking
-     ▼
-chunk-*.zst
-     │
-     │ upload
      ▼
 Scaleway Object Storage
 remote: reddit-dataset/dump-subreddit-italia-since-2008
@@ -67,48 +59,14 @@ remote: reddit-dataset/dump-subreddit-italia-since-2008
 I dump sono forniti tramite torrent e hanno struttura logica:
 
 ```text
-data/
-->
-torrent/
-->
-reddit/
-├── comments/
-│   └── RC_YYYY-MM.zst
-└── submissions/
-    └── RS_YYYY-MM.zst
+comments/
+└── RC_YYYY-MM.zst
+
+submissions/
+└── RS_YYYY-MM.zst
 ```
 
-`comments` e `submissions` sono dataset distinti e possono avere schemi differenti.
-
-### Schema dei record
-
-L'architettura non deve assumere preventivamente uno schema completo dei dump.
-
-I campi effettivamente disponibili devono essere determinati mediante ispezione dei dump reali.
-
-In particolare, devono essere identificati i campi necessari a:
-
-identificare univocamente i record;
-determinare il subreddit;
-distinguere comments e submissions;
-ricostruire durante l'export la relazione tra commenti e submission, se richiesta dal formato finale;
-preservare i dati necessari al dataset finale.
-
-Lo schema DuckDB deve essere definito sulla base dello schema reale dei dump e delle esigenze dell'export.L'architettura non deve assumere preventivamente uno schema completo dei dump.
-
-I campi effettivamente disponibili devono essere determinati mediante ispezione dei dump reali.
-
-In particolare, devono essere identificati i campi necessari a:
-
-* identificare univocamente i record, quindi tipo l'ID del comments associato al submissions rimane;
-* determinare il subreddit;
-* distinguere comments e submissions;
-* ricostruire durante l'export la relazione tra commenti e submission, se richiesta dal formato finale;
-* preservare i dati necessari al dataset finale.
-
-Lo schema DuckDB deve essere definito sulla base dello schema reale dei dump e delle esigenze dell'export.
-
-Quindi alla fine avremo un unico database con uno schema fuso di dumps e submissions.
+`comments` e `submissions` sono dataset distinti e possono avere schemi differenti. Il processor non assume preventivamente uno schema completo dei dump: è sufficiente che ogni record JSON contenga un campo `subreddit`, usato per il filtro.
 
 ---
 
@@ -118,48 +76,34 @@ Struttura prevista:
 
 ```text
 data/
-├── database/
-│   └── database.duckdb
-├── torrent/
-│   └── ...
 ├── export/
-│   └── chunks/
-
-config/
+│   └── <nome>.zst          # file filtrati (transitori)
 └── historical_italian_subreddits_2008_2025.json
 ```
 
-Ambiente attuale di riferimento (ci saranno nuove librerie probabilmente):
+Ambiente di riferimento:
 
 ```text
 Debian 12
 Python 3.12+
-12 vCPU
-24 GB RAM
-500 GB storage
-DuckDB
 Zstandard
 qbittorrent-api
-Scaleway Object Storage
+boto3 (Scaleway Object Storage)
 ```
 
 Lo storage locale è temporaneo e viene utilizzato per:
 
 * download dei torrent;
 * processamento dei dump;
-* generazione temporanea dei chunk durante l'export, quando necessario.
+* generazione dei file `.zst` filtrati in `data/export/`.
 
-I dump Reddit `.zst` **non devono mai essere decompressi integralmente su disco**.
-
-La decompressione deve avvenire esclusivamente in streaming.
+I dump Reddit `.zst` **non devono mai essere decompressi integralmente su disco**. La decompressione avviene esclusivamente in streaming.
 
 ---
 
 ## qBittorrent e rilevamento dei file pronti
 
-qBittorrent è responsabile del download dei dump.
-
-La pipeline utilizza qBittorrent API per determinare quali file risultano effettivamente completati.
+qBittorrent è responsabile del download dei dump. La pipeline utilizza qBittorrent API per determinare quali file risultano effettivamente completati.
 
 Il flusso è:
 
@@ -168,64 +112,27 @@ qBittorrent download
         ↓
 qBittorrent API
         ↓
-dump list files to be downloaded queue
-        ↓
-torrent completato -> segnale di stop nella queue
+file completato
         ↓
 Processor
 ```
 
 Un file viene preso in carico dal processor soltanto quando qBittorrent ne segnala il completamento.
 
-Non è necessario implementare un file watcher basato su `inotify` per determinare la disponibilità dei dump.
-
----
-
-## File lifecycle
-
-Il lifecycle logico di un file è:
-
-```text
-DOWNLOAD
-   │
-   │ qBittorrent API → completed
-   ▼
-PENDING
-   │
-   ▼
-PROCESSING
-   │
-   ├──────────────► FAILED
-   │
-   ▼
-COMPLETED
-   │
-   ▼
-source deleted
-```
-
-### Regole
-
-* Un file non completato da qBittorrent non deve essere processato.
-* Un file già `COMPLETED` non deve essere rielaborato.
-* Un file `FAILED` può essere ritentato.
-* Non devono essere eseguiti contemporaneamente due worker sullo stesso file.
-* Il file sorgente `.zst` deve essere eliminato **solo dopo il commit della transazione DuckDB**.
-* Lo stato del file deve rimanere persistito in DuckDB anche dopo la cancellazione del sorgente.
-* La cancellazione del sorgente non deve essere utilizzata come indicatore dello stato di processamento.
+Non è necessario implementare un file watcher basato su `inotify`.
 
 ---
 
 ## Processing
 
-Ogni dump viene processato interamente in streaming:
+Ogni dump viene processato interamente in streaming (`processor.filter_dump`):
 
 ```text
-.zst
+.zst sorgente
  ↓
 Zstandard streaming decompression
  ↓
-NDJSON line
+NDJSON line (lettura a livello di byte)
  ↓
 JSON parse
  ↓
@@ -235,210 +142,100 @@ whitelist check
  ↓
 discard
    oppure
-batch insert
+scrivi riga ricompressa
  ↓
-DuckDB
+.zst filtrato in data/export/
 ```
 
-Non deve essere creato un file JSON intermedio.
+Non viene creato un file JSON intermedio. Il processor non carica l'intero dump in memoria.
 
-Il processor non deve caricare l'intero dump in memoria.
+La lettura avviene a livello di byte in chunk: `io.TextIOWrapper` iterato su `ZstdDecompressor.stream_reader` può restituire righe troncate quando i chunk decompressi non coincidono con i confini di riga. Per questo le righe vengono ricostruite con uno split manuale su `\n`, mantenendo in memoria soltanto la riga corrente.
 
-Il consumo di memoria deve rimanere sostanzialmente indipendente dalla dimensione del dump, utilizzando:
+Il file di output viene scritto soltanto se almeno un record appartiene alla whitelist:
 
-* decompressione streaming;
-* parsing record-by-record;
-* batch di dimensione configurabile per gli insert in DuckDB.
+* `kept > 0` → il file `.zst` filtrato resta in `data/export/`;
+* `kept == 0` → il file di output viene eliminato (nessun file vuoto).
+
+Il sorgente `.zst` viene **sempre** eliminato dopo il processamento, indipendentemente dal numero di record mantenuti.
 
 ---
 
 ## Whitelist
 
-Il filtro viene applicato prima della persistenza in DuckDB.
+Il filtro viene applicato durante il processamento (`subreddit_filter.SubRedditFilter`).
 
 La whitelist dei subreddit è definita esternamente al codice:
 
 ```text
-config/historical_italian_subreddits_2008_2025.json
+data/historical_italian_subreddits_2008_2025.json
 ```
 
 Il processor deve:
 
-1. estrarre dal record il subreddit;
-2. normalizzare il valore secondo le regole definite dalla pipeline;
-3. verificare la presenza nella whitelist;
+1. estrarre dal record il campo `subreddit`;
+2. normalizzare il valore (lowercase e strip);
+3. verificare la presenza nella whitelist (membership O(1));
 4. scartare i record non appartenenti alla whitelist;
-5. persistere esclusivamente i record validi.
+5. scrivere esclusivamente i record validi.
 
-La modifica della whitelist non deve richiedere modifiche al codice del processor.
-
----
-
-## DuckDB
-
-Il database locale costituisce lo storage persistente intermedio della pipeline.
-
-Tabelle minime:
-
-gli schemi di `comments` e `submissions` vengono fusi in un unico schema logico.
+La modifica della whitelist non richiede modifiche al codice del processor.
 
 ---
 
-## Stato e recovery
+## Coda di upload e worker
 
-Gli stati principali sono:
+Il loop di ingestione (`main.py`) produce, per ogni file filtrato, un job di upload nella `queue.Queue` condivisa. Un pool di worker thread concorrenti consuma la coda e carica ciascun file.
 
-```text
-PENDING
-   ↓
-PROCESSING
-   ├──→ FAILED
-   ↓
-COMPLETED
-```
+Numero di worker configurabile (`UPLOAD_WORKERS`, default 3).
 
-Il processamento di un singolo file deve essere atomico rispetto alla persistenza dei dati in DuckDB.
+Il worker:
 
-Schema logico:
+1. prende un job dalla coda;
+2. carica il file in upload multi-part;
+3. notifica l'esito (successo o errore).
 
-```text
-BEGIN TRANSACTION
-
-    mark file PROCESSING
-
-    read .zst in streaming
-
-    filter records
-
-    insert batches
-
-    mark file COMPLETED
-
-COMMIT
-```
-
-Se il processamento fallisce prima del `COMMIT`, le modifiche alla transazione vengono rollbackate.
-
-### Regole di recovery
-
-* `COMPLETED` → il file non viene rielaborato;
-* `FAILED` → il file può essere ritentato;
-* `PROCESSING` lasciato da un processo terminato in modo anomalo deve poter essere recuperato secondo le informazioni di stato persistite;
-* nessun file può essere elaborato contemporaneamente da due worker;
-* un retry non deve produrre duplicati;
-* il sorgente viene cancellato solo dopo il commit riuscito.
-
-L'idempotenza deve essere garantita a livello di pipeline e non deve dipendere dalla presenza del file sul filesystem.
-
----
-
-## Completion condition
-
-Quando viene inviato il segnale di trigger stop da Qbittorrent-api alla pipeline queue di Download in corso, cioè che il torrent ha scaricato tutto.
-
-
-La directory dei torrent vuota non implica il completamento.
-
-Il trigger di stop segnala che qBittorrent ha terminato il ciclo di download previsto e che la pipeline può passare dalla fase di ingestione alla fase di export, purché tutti i file attesi siano stati processati.
-
----
-
-## Export
-
-L'export viene avviato esclusivamente quando:
-
-```text
-all expected files COMPLETED
-+
-finish trigger stop ricevuto.
-```
-
-Il database DuckDB viene esportato in un unico dataset logico composto da:
-
-```text
-submissions + comments
-```
-
-L'export deve essere eseguito in streaming e non deve creare un file temporaneo contenente l'intero dataset.
-
-Flusso:
-
-```text
-DuckDB
-   ↓
-submissions + comments
-   ↓
-eventuale ricostruzione delle relazioni
-   ↓
-stream serialization
-   ↓
-Zstandard
-   ↓
-chunk-*.zst
-```
-
-La relazione tra `comments` e `submissions` deve essere ricostruita utilizzando gli identificativi effettivamente presenti nei dump e identificati durante l'analisi dello schema.
-
-Non devono essere introdotte assunzioni arbitrarie sui nomi o sulla struttura dei campi.
-
----
-
-## Chunking
-
-L'export viene suddiviso in chunk `.zst` con dimensione target di circa:
-
-```text
-10–15 GB per chunk
-```
-
-La dimensione è un target operativo e non deve richiedere la produzione di chunk perfettamente identici.
-
-Ogni chunk deve essere:
-
-* autonomo;
-* valido;
-* decomprimibile indipendentemente;
-* composto esclusivamente da record completi;
-* identificato univocamente;
-* compatibile con il formato del dataset finale.
-
-Un singolo chunk può contenere sia record `submissions` sia record `comments`.
-
-Il dataset rappresentato dai chunk costituisce un unico dataset logico.
-
-Non deve essere creato un file intermedio contenente l'intero export prima della suddivisione.
+All'uscita dal loop di ingestione, vengono inviate le sentinelle di stop ai worker e si attende (`queue.join()`) che tutti gli upload in coda siano completati prima di terminare il programma.
 
 ---
 
 ## Object Storage
 
-I chunk finali vengono caricati su Scaleway Object Storage nel percorso remoto:
+I file filtrati vengono caricati su Scaleway Object Storage nel percorso remoto:
 
 ```text
 reddit-dataset/dump-subreddit-italia-since-2008
 ```
 
-Struttura logica:
+Ogni file `.zst` filtrato viene caricato come **un singolo oggetto**, con chiave:
 
 ```text
-reddit-dataset/
-└── dump-subreddit-italia-since-2008/
-    ├── chunk-000001.zst
-    ├── chunk-000002.zst
-    ├── chunk-000003.zst
-    └── ...
+reddit-dataset/dump-subreddit-italia-since-2008/<nome>.zst
 ```
 
-L'upload deve prevedere:
+L'upload multi-part è usato esclusivamente come ottimizzazione del trasferimento (dividere l'upload in parti parallele per velocità) e **non** suddivide i dati in più oggetti: il risultato è un unico oggetto nel bucket.
 
-* retry in caso di errore temporaneo;
+L'upload prevede:
+
+* upload multi-part tramite boto3 `TransferConfig` (threshold e chunk size configurabili);
+* retry su errori temporanei con backoff esponenziale;
 * gestione degli errori permanenti;
-* verifica del completamento dell'upload;
-* upload multi-part per velocizzare la velocità di upload.
-* possibilità di riprendere un export interrotto;
-* identificazione univoca dei chunk.
+* verifica del completamento tramite `head_object`.
 
-Un chunk viene considerato completato solo dopo la conferma dell'upload.
+Dopo un upload riuscito, il file viene rimosso da `data/export/`.
+
+---
+
+## Completamento del programma
+
+Il loop di ingestione termina quando:
+
+```text
+tutti i file attesi hanno completato il download (has_finished)
++
+nessun sorgente .zst pendente su disco
+```
+
+Al termine, il programma attende il completamento di tutti gli upload in coda prima di uscire.
 
 ---
 
@@ -446,16 +243,15 @@ Un chunk viene considerato completato solo dopo la conferma dell'upload.
 
 Le credenziali per qBittorrent e Scaleway Object Storage non devono essere inserite nel repository.
 
-Le configurazioni operative devono essere fornite tramite:
+Le configurazioni operative vengono fornite tramite:
 
 * variabili d'ambiente;
-* file di configurazione locale escluso dal versionamento;
-* eventuali secret manager compatibili con l'ambiente di deployment.
+* file `.env` locale escluso dal versionamento.
 
 La whitelist dei subreddit rimane invece un file di configurazione versionato:
 
 ```text
-config/historical_italian_subreddits_2008_2025.json
+data/historical_italian_subreddits_2008_2025.json
 ```
 
 ---
@@ -470,45 +266,41 @@ Responsabile di:
 * verifica del completamento dei file;
 * esposizione dello stato tramite API.
 
-### Processor
+### Processor (`processor.py`)
+
+Responsabile di:
+
+* streaming decompression;
+* lettura delle righe NDJSON a livello di byte;
+* parsing JSON;
+* filtro whitelist;
+* scrittura del file `.zst` filtrato in `data/export/`;
+* eliminazione del sorgente;
+* eliminazione dell'output se nessun record è in whitelist.
+
+### SubRedditFilter (`subreddit_filter.py`)
+
+Responsabile di:
+
+* caricamento della whitelist dal file JSON;
+* normalizzazione dei nomi;
+* verifica di membership O(1).
+
+### Loop di ingestione (`main.py`)
 
 Responsabile di:
 
 * individuazione dei file completati tramite qBittorrent API;
-* streaming decompression;
-* parsing NDJSON;
-* filtro whitelist;
-* batch insert;
-* gestione dello stato del file;
-* recovery e idempotenza;
-* eliminazione del sorgente dopo il commit.
+* invio dei file filtrati alla coda di upload;
+* gestione dei worker di upload;
+* determinazione della condizione di uscita;
+* attesa del completamento degli upload.
 
-### DuckDB
+### Uploader (`uploader.py`)
 
 Responsabile di:
 
-* persistenza dei record filtrati;
-* stato dei file;
-* informazioni necessarie al recovery;
-* sorgente dell'export finale.
-
-### Exporter
-
-Responsabile di:
-
-* lettura dei dati da DuckDB;
-* costruzione del dataset logico `comments + submissions`;
-* serializzazione streaming;
-* chunking `.zst`;
-* recovery dell'export.
-
-### Object Storage uploader
-
-Responsabile di:
-
-* upload dei chunk;
-* retry;
+* upload multi-part su Scaleway Object Storage;
+* retry su errori temporanei;
 * verifica del completamento;
-* recovery degli upload interrotti.
-
----
+* worker concorrenti che consumano la coda.

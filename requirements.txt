@@ -1,0 +1,4 @@
+boto3==1.43.98
+python-dotenv==1.2.3
+qbittorrent_api==2026.8.1
+zstandard==0.25.0

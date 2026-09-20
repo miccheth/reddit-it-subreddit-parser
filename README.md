@@ -1,105 +1,91 @@
 # reddit-it-subreddit-parser
 
-Pipeline ETL per l'ingestione e l'esportazione dei dump storici di tutti i subreddit italiani creati dal 2008 fino al 2025.
+Pipeline per il filtraggio dei dump storici Reddit, tenendo soltanto i subreddit italiani.
 
-I dump vengono scaricati tramite qBittorrent, processati in streaming e filtrati secondo la whitelist dei subreddit italiani. I dati filtrati vengono persistiti in DuckDB e successivamente esportati in chunk `.zst` da circa 10–15 GB e caricati su Scaleway Object Storage.
+I dump `comments` e `submissions` vengono scaricati tramite qBittorrent, processati in streaming e filtrati secondo una whitelist di subreddit italiani. Il risultato è un nuovo file `.zst` (con lo stesso nome) che contiene solo i record dei subreddit in whitelist, caricato poi su Scaleway Object Storage in upload multi-part.
 
 ## Pipeline
 
 ```text
 qBittorrent
      ↓
-torrent/
+file completo .zst
      ↓
-qBittorrent API
+Processor (filtro streaming + whitelist)
      ↓
-file ready
+data/export/<nome>.zst (filtrato)
      ↓
-Processor
+coda upload (N worker)
      ↓
-DuckDB
-     ↓
-Export
-     ↓
-chunk-*.zst (~10–15 GB)
-     ↓
-Scaleway Object Storage
+Scaleway Object Storage (multi-part)
 ```
 
 ## Caratteristiche
 
-* elaborazione dei dump completi `.zst` in streaming;
+* elaborazione dei dump `.zst` in streaming, senza decompressione integrale su disco;
 * nessun file JSON intermedio;
-* filtro tramite whitelist di subreddit;
-* persistenza in DuckDB;
-* processing resumable e idempotente;
-* gestione dello stato dei file;
-* rilevamento del completamento dei download tramite qBittorrent-api;
-* eliminazione dei dump sorgente dopo il processamento riuscito;
-* finito di processare tutti i dump in coda;
-* export database in chunk `.zst` da ~10–15 GB;
-* upload dei chunk su Scaleway Object Storage alla cartella con indirizzo remoto: reddit-dataset/dump-subreddit-italia-since-2008
-* possibilità di riprendere un processing o un export interrotto.
+* filtro tramite whitelist di subreddit (`SubRedditFilter`);
+* scrittura di un nuovo `.zst` filtrato in `data/export/` con lo stesso nome del sorgente;
+* nessun file vuoto in export se un dump non contiene subreddit della whitelist;
+* eliminazione sempre del dump sorgente dopo il processamento;
+* rilevamento del completamento dei download tramite qbittorrent-api;
+* upload multi-part su Scaleway Object Storage con worker concorrenti;
+* rimozione del file esportato da `data/export/` dopo un upload riuscito.
 
 ## Struttura del progetto
 
 ```text
 .
 ├── src/
-│   └── ...
-├── config/
-│   └── historical_italian_subreddits_2008_2025.json
+│   ├── main.py              # loop di ingestione + coda upload
+│   ├── processor.py         # filtraggio streaming .zst
+│   ├── subreddit_filter.py  # whitelist dei subreddit
+│   ├── uploader.py          # upload multi-part e worker
+│   ├── qbittorrent_client.py
+│   └── config.py
 ├── data/
-│   ├── database/
-│   ├── torrent/
-│   ├── export/
-├── tests/
-├── docs/
-│   ├── ARCHITECTURE.md
-├── README.md
-└── ...
+│   ├── export/              # .zst filtrati (transitori, rimossi dopo l'upload)
+│   └── historical_italian_subreddits_2008_2025.json
+├── ARCHITECTURE.md
+└── README.md
 ```
 
 ## Requisiti
 
-Ambiente di riferimento:
-
-* Debian
 * Python 3.12+
-* DuckDB
 * Zstandard
-* qBittorrent
-* Scaleway Object Storage
+* qbittorrent-api
+* boto3 (upload S3/Scaleway)
 
 ## Configurazione
 
-La whitelist dei subreddit è disponibile in questo percorso:
+La whitelist dei subreddit è disponibile in:
 
 ```text
-config/historical_italian_subreddits_2008_2025.json
+data/historical_italian_subreddits_2008_2025.json
 ```
 
-Le credenziali e le configurazioni operative non devono essere inserite nel repository.
+Le credenziali e le configurazioni operative vengono fornite tramite variabili d'ambiente o un file `.env` locale escluso dal versionamento. Si vedano le variabili in `.env.example`:
 
-Utilizzare variabili d'ambiente o un file di configurazione locale escluso dal versionamento.
-
+* `QBITTORRENT_HOST`, `QBITTORRENT_PORT`, `QBITTORRENT_USERNAME`, `QBITTORRENT_PASSWORD`, `QBITTORRENT_TORRENT`
+* `SCALEWAY_ENDPOINT_URL`, `SCALEWAY_ACCESS_KEY`, `SCALEWAY_SECRET_KEY`, `SCALEWAY_BUCKET`, `SCALEWAY_REMOTE_PREFIX`
 
 ## Flusso operativo
 
-1. qBittorrent scarica i dump in `data/torrent/`.
-2. La pipeline rileva tramite qBittorrent-api quali file sono completati.
-3. I file completati vengono segnalati al programma.
-4. Il processor legge ogni dump pronto `.zst` in streaming.
-5. I record vengono filtrati tramite whitelist.
-6. I record validi vengono inseriti in DuckDB.
-7. Il file sorgente viene eliminato dopo il completamento della transazione.
-8. Quando tutti i file attesi sono stati processati e viene ricevuto il trigger finish da Qbittorrent-api.
-9. L'export produce chunk `.zst` da ~10–15 GB.
-10. I chunk vengono caricati su Scaleway Object Storage.
+1. qBittorrent scarica i dump `.zst` (comments e submissions).
+2. Il loop di `main.py` interroga qbittorrent-api per individuare i file completati.
+3. Per ogni file completo ancora presente su disco, il processor legge il `.zst` in streaming.
+4. I record vengono filtrati tramite la whitelist dei subreddit italiani.
+5. I record mantenuti vengono scritti, ricompressi, in `data/export/<nome>.zst`.
+6. Se nessun record appartiene alla whitelist, l'output viene eliminato (nessun file vuoto).
+7. Il sorgente `.zst` viene sempre eliminato.
+8. Il file filtrato viene accodato e caricato in multi-part su Scaleway Object Storage da un worker disponibile.
+9. Dopo un upload riuscito, il file viene rimosso da `data/export/`.
+10. Il programma termina quando tutti i download sono completati e non restano sorgenti pendenti, attendendo il completamento degli upload.
 
 ## Architettura
 
-La documentazione dettagliata dell'architettura, delle responsabilità dei componenti, del lifecycle dei file, dello stato di recovery e delle condizioni di completamento è disponibile in:
+La documentazione dettagliata dell'architettura e delle responsabilità dei componenti è disponibile in:
 
 ```text
 ARCHITECTURE.md
@@ -107,8 +93,6 @@ ARCHITECTURE.md
 
 ## Storage
 
-Lo storage locale è utilizzato come spazio temporaneo per download, processing ed export.
+Lo storage locale è utilizzato come spazio temporaneo per download, filtraggio ed export.
 
-I dump Reddit non vengono mai decompressi integralmente su disco.
-
-Il dataset finale viene trasferito su Scaleway Object Storage.
+I dump Reddit non vengono mai decompressi integralmente su disco: la decompressione avviene esclusivamente in streaming.
