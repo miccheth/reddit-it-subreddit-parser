@@ -304,3 +304,123 @@ Responsabile di:
 * retry su errori temporanei;
 * verifica del completamento;
 * worker concorrenti che consumano la coda.
+
+# Ottimizzazione architetturale della pipeline
+
+
+## Parallelizzazione del processing
+
+Non conviene parallelizzare arbitrariamente il singolo `.zst`: decompressione Zstandard, parsing dei record e ricompressione possono essere parallelizzati solo introducendo un meccanismo di **chunking** appropriato, mentre l’attuale modello che i dump di Reddit ci offrono: “un dump → uno stream → un output `.zst`” è naturalmente seriale.
+
+La prima ottimizzazione sarebbe quindi parallelizzare **tra dump**, non necessariamente dentro il dump. Se qBittorrent ha più file completati, più `Processor` possono lavorare contemporaneamente, ciascuno con il proprio input e output, mentre una coda bounded separa processing e upload. In questo modo l’upload lento non diventa una ragione per continuare a generare file filtrati e saturare il disco.
+
+## Code e backpressure
+
+Introdurre una `processing_queue` e una `upload_queue`, entrambe con capacità limitata. qBittorrent rimane la sorgente dei lavori, ma `main.py` non dovrebbe semplicemente lanciare processing e upload senza controllo: deve applicare **backpressure**.
+
+Se `upload_queue` raggiunge la soglia, significa che il processing sta producendo dati più rapidamente di quanto il cloud remoto riesca a consumarli; a quel punto bisogna ridurre o fermare temporaneamente nuovi processor. Analogamente, se `data/export/` cresce oltre una soglia di sicurezza, lo storage locale deve essere considerato saturo e l’ingestione deve rallentare.
+
+La pipeline diventa quindi:
+
+```text
+qBittorrent
+    ↓
+processing_queue [BOUNDED]
+    ↓
+processor pool
+    ↓
+upload_queue [BOUNDED]
+    ↓
+uploader pool
+    ↓
+Scaleway
+```
+
+La coda non è soltanto una struttura dati, ma il meccanismo con cui il sistema comunica la pressione tra gli stadi. Se `upload_queue` è vuota e i processor sono saturi, aumentare gli upload worker non serve; se invece i processor producono rapidamente e `upload_queue` cresce, il collo di bottiglia è l’upload e bisogna intervenire sull’uploader, non creare ulteriori output. Se anche aumentando la concurrency multipart il throughput non cresce, l’upload ha probabilmente raggiunto il limite effettivo imposto da rete, Object Storage o macchina.
+
+## Concorrenza adattiva
+
+L’ottimizzazione più interessante riguarda l’orchestratore. Anziché configurare semplicemente valori fissi come `PROCESSOR_WORKERS=4` e `UPLOAD_WORKERS=8`, il sistema potrebbe partire da un numero conservativo e osservare **throughput, CPU, I/O wait, RAM, dimensione delle queue e occupazione di `data/export/`**, aumentando progressivamente la concorrenza finché il throughput cresce e fermandosi quando il beneficio marginale scompare.
+
+In pratica, se passando da 2 a 3 processor il throughput aumenta significativamente, si continua; se rimane praticamente invariato, 2 rappresentano già il limite utile; se peggiora, si torna indietro. Lo stesso principio può essere applicato agli upload multipart, ma separatamente: il numero ottimale di processor e quello degli upload worker non devono necessariamente coincidere.
+
+## Osservabilità
+
+Prima di introdurre qualsiasi algoritmo sofisticato, bisogna: **misurare il costo reale di ogni fase**. Ogni dump dovrebbe produrre metriche come:
+
+* `input_size`
+* `output_size`
+* `records_read`
+* `records_kept`
+* `processing_seconds`
+* `processing_MB/s`
+* `compression_ratio`
+* `upload_seconds`
+* `upload_MB/s`
+* eventualmente `peak_export_storage`
+
+Questo permette di distinguere un problema di decompressione/parsing da uno di compressione o rete. Senza queste metriche, un adaptive controller rischia di essere soltanto un termostato con gli occhiali.
+
+## RAM e storage locale
+
+Visto che i dump italiani sono molto piccoli, possiamo tenere i nuovi record compressi in RAM (max utilizzo 80%), usando il disco come riserva in caso si satura la RAM. Così da lì direttamente viene fatto l'upload.
+
+La politica utile riguarda quindi soprattutto lo spazio disponibile in `data/export/`: se lo staging supera una percentuale configurabile del filesystem, il producer dovrebbe rallentare o sospendere nuovi processing finché gli uploader non liberano spazio. Questo è più semplice e più aderente all’architettura rispetto all’introduzione di un ulteriore livello artificiale RAM→SSD.
+
+## Separazione delle responsabilità
+
+A livello di codice, separerei ulteriormente le responsabilità:
+
+```text
+main.py
+    → orchestratore
+
+processor.py
+    → worker puro: input → output
+
+uploader.py
+    → worker: output → Object Storage
+
+controller.py
+    → eventuale adaptive concurrency + metriche
+
+qbittorrent_client.py
+    → osservazione dello stato dei download
+```
+
+
+## Architettura complessiva
+
+```text
+                         ┌─────────────────────┐
+                         │     CONTROLLER      │
+                         │                     │
+                         │ CPU / I/O / RAM     │
+                         │ throughput          │
+                         │ queue depth         │
+                         │ disk free           │
+                         └───────┬─────────────┘
+                                 │
+                                 ▼
+qBittorrent ──► processing_queue [BOUNDED]
+                         │
+                ┌────────┼────────┐
+                ▼        ▼        ▼
+             Processor Processor Processor
+                │        │        │
+                └────────┼────────┘
+                         ▼
+                   upload_queue
+                     [BOUNDED]
+                         │
+                ┌────────┼────────┐
+                ▼        ▼        ▼
+             Uploader  Uploader  Uploader
+                │        │        │
+                └────────┼────────┘
+                         ▼
+                 Scaleway Object
+                    Storage
+```
+
+Ottimizza il flusso complessivo**. Il parametro da massimizzare è il throughput end-to-end sostenibile, mentre queue depth, CPU, RAM, disco e rete diventano segnali di feedback. Questo si integra con il progetto attuale senza stravolgere il processor streaming: lo trasforma da unico collo di bottiglia potenziale in uno stadio scalabile e governato.
