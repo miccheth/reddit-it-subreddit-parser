@@ -11,11 +11,9 @@ from dotenv import load_dotenv
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 DATA_DIR = PROJECT_ROOT / "data"
-DATABASE_DIR = DATA_DIR / "database"
-CHUNK_EXPORT_DIR = DATA_DIR / "chunk_export"
+EXPORT_DIR = DATA_DIR / "export"
 
 SUBREDDIT_LIST_PATH = DATA_DIR / "historical_italian_subreddits_2008_2025.json"
-DATABASE_PATH = DATABASE_DIR / "database.duckdb"
 
 
 @dataclass(frozen=True)
@@ -43,7 +41,6 @@ class ScalewayConfig:
 class Settings:
     """Configurazione operativa completa della pipeline."""
 
-    chunk_target_bytes: int
     qbittorrent: QbittorrentConfig
     scaleway: ScalewayConfig
     torrent_file: str
@@ -62,7 +59,6 @@ def load_settings() -> Settings:
     load_dotenv(PROJECT_ROOT / ".env")
     
     return Settings(
-        chunk_target_bytes=_get_int("REDDIT_CHUNK_TARGET_BYTES", 12884901888),
         qbittorrent=QbittorrentConfig(
             host=os.getenv("QBITTORRENT_HOST", "localhost"),
             port=_get_int("QBITTORRENT_PORT", 8080),

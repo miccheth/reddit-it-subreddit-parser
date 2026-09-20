@@ -6,14 +6,14 @@ import json
 from pathlib import Path
 
 
-class SubRedditList:
+class SubRedditFilter:
     """Whitelist dei subreddit italiani con supporto alla membership O(1)."""
 
     def __init__(self, subreddits: set[str]) -> None:
         self._subreddits = subreddits
 
     @classmethod
-    def from_file(cls, path: Path) -> SubRedditList:
+    def from_file(cls, path: Path) -> SubRedditFilter:
         """Carica la whitelist da un file JSON contenente un array di nomi."""
         with path.open("r", encoding="utf-8") as file:
             raw = json.load(file)
